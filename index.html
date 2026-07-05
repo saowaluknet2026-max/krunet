@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR Algorithm Catching Game</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #1a1a1a; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh;
+            font-family: 'ChulaCharasNew', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        /* สไตล์หน้าจอแสดงผลเกม */
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* กลับข้างวิดีโอและ Canvas ให้เหมือนกระจกเงา (Mirror Effect) */
+        video, canvas { 
+            position: absolute; 
+            width: 100%; 
+            height: 100%; 
+            object-fit: cover; 
+            transform: scaleX(-1); 
+        }
+        
+        canvas { 
+            z-index: 10; 
+        }
+
+        /* ส่วนจัดวางหน้าจอ UI คะแนนและคำแนะนำ */
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 20;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 15px;
+            border: 2px solid #00ffcc;
+            pointer-events: none; /* ป้องกันไม่ให้บังการคลิก */
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            max-width: 320px;
+        }
+        
+        h1 { 
+            margin: 0 0 10px 0; 
+            font-size: 22px; 
+            color: #00ffcc; 
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        p { 
+            margin: 6px 0; 
+            font-size: 16px; 
+            color: #e0e0e0;
+        }
+
+        #score-board {
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff;
+            margin-top: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px;
+            border-radius: 8px;
+            text-align: center;
+            border-left: 5px solid #00ffcc;
+        }
+
+        /* แสดงสถานะการโหลดระบบ */
+        #loading {
+            position: absolute;
+            color: white;
+            font-size: 24px;
+            z-index: 30;
+            background: rgba(0,0,0,0.8);
+            padding: 20px 40px;
+            border-radius: 10px;
+            border: 1px solid #fff;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div id="loading">กำลังเปิดกล้องและโหลดระบบ AI มือ...</div>
+        <video id="webcam" autoplay playsinline style="display:none;"></video>
+        <canvas id="output_canvas"></canvas>
+
+        <div id="ui-layer">
+            <h1>AR Algorithm Game</h1>
+            <p>💡 <b>วิธีเล่น:</b> ยื่นนิ้วชี้ไปแตะวัตถุบนจอ</p>
+            <p>✅ แตะสีเขียว (Algorithm) ได้ <b>+10</b></p>
+            <p>❌ แตะสีแดง (ไม่ใช่ Algorithm) โดน <b>-5</b></p>
+            <div id="score-board">คะแนน: 0</div>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const scoreBoard = document.getElementById('score-board');
+        const loadingElement = document.getElementById('loading');
+
+        let score = 0;
+        let indexFinger = { x: 0, y: 0, isActive: false };
+        let gameItems = [];
+
+        // คลังคำศัพท์สำหรับสุ่มฟังก์ชันในเกม
+        const wordsPool = [
+            { text: "เริ่มทำงาน (Start)", isAlgo: true, color: "#2ecc71" },
+            { text: "รับค่าข้อมูล (Input)", isAlgo: true, color: "#2ecc71" },
+            { text: "คำนวณผล (Process)", isAlgo: true, color: "#2ecc71" },
+            { text: "ตรวจสอบเงื่อนไข (If/Else)", isAlgo: true, color: "#2ecc71" },
+            { text: "ทำซ้ำ (Loop)", isAlgo: true, color: "#2ecc71" },
+            { text: "แสดงผลลัพธ์ (Output)", isAlgo: true, color: "#2ecc71" },
+            { text: "นอนกลางวัน", isAlgo: false, color: "#e74c3c" },
+            { text: "นั่งสมาธิ", isAlgo: false, color: "#e74c3c" },
+            { text: "กินหมูกระทะ", isAlgo: false, color: "#e74c3c" },
+            { text: "ลืมรหัสผ่าน", isAlgo: false, color: "#e74c3c" },
+            { text: "คุยโทรศัพท์", isAlgo: false, color: "#e74c3c" }
+        ];
+
+        // ปรับขนาดหน้าจอให้พอดีเป๊ะตลอดเวลา
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 1. เริ่มตั้งค่าระบบตรวจจับมือ MediaPipe Hands
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,            // จับแค่ทีละมือเพื่อความลื่นไหล
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        hands.onResults(onResults);
+
+        // 2. เรียกใช้งานเว็บแคม
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+        
+        // ซ่อนข้อความโหลดเมื่อกล้องเปิดติดแล้ว
+        camera.start().then(() => {
+            loadingElement.style.display = 'none';
+        }).catch(err => {
+            loadingElement.innerText = "ไม่สามารถเข้าถึงกล้องได้ กรุณาอนุญาตให้เข้าถึงกล้อง";
+            console.error(err);
+        });
+
+        // 3. ฟังก์ชันหลักที่จะทำงานทุกเฟรมเมื่อ AI ตรวจจับมือเจอ
+        function onResults(results) {
+            // วาดภาพจากกล้องเว็บแคมลงบน Canvas (เคลียร์เฟรมเก่าและกลับซ้ายขวา)
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.translate(canvasElement.width, 0);
+            canvasCtx.scale(-1, 1);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.restore();
+
+            indexFinger.isActive = false;
+
+            // ตรวจสอบพิกัดของมือ
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // จุดที่ 8 ใน MediaPipe Hands คือ "ปลายนิ้วชี้"
+                // แปลงพิกัดสัดส่วน 0-1 ให้เป็นพิกัดพิกเซลจริงบนหน้าจอ (และสลับด้านกลับตามกล้อง)
+                indexFinger.x = (1 - landmarks[8].x) * canvasElement.width;
+                indexFinger.y = landmarks[8].y * canvasElement.height;
+                indexFinger.isActive = true;
+
+                // วาดเป้าเล็งสีแดง-ขาว ที่ปลายนิ้วชี้ของผู้เล่น
+                canvasCtx.beginPath();
+                canvasCtx.arc(indexFinger.x, indexFinger.y, 16, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = '#ff3333';
+                canvasCtx.fill();
+                canvasCtx.lineWidth = 4;
+                canvasCtx.strokeStyle = '#ffffff';
+                canvasCtx.stroke();
+            }
+
+            // รันระบบเกมและอัปเดตการเคลื่อนไหวของวัตถุ
+            updateGame();
+        }
+
+        // ฟังก์ชันสุ่มปล่อยวัตถุลงมาจากฟ้า
+        function spawnItem() {
+            if (Math.random() < 0.025 && gameItems.length < 4) { // จำกัดไม่ให้กล่องล้นจอเกินไป
+                const randomData = wordsPool[Math.floor(Math.random() * wordsPool.length)];
+                gameItems.push({
+                    x: Math.random() * (canvasElement.width - 240) + 120, // สุ่มตำแหน่งแกน X
+                    y: -60,                                               // เริ่มจากเหนือหน้าจอ
+                    text: randomData.text,
+                    isAlgo: randomData.isAlgo,
+                    color: randomData.color,
+                    speed: Math.random() * 3 + 3,                         // สุ่มความเร็วในการตก
+                    width: 220,
+                    height: 55
+                });
+            }
+        }
+
+        // 4. ลอจิกการทำงานและอนิเมชั่นของตัวเกม
+        function updateGame() {
+            spawnItem();
+
+            for (let i = gameItems.length - 1; i >= 0; i--) {
+                let item = gameItems[i];
+                item.y += item.speed; // ให้กล่องตกลงด้านล่างตามค่าความเร็ว
+
+                // วาดกล่องข้อความเหลี่ยมมุมโค้งมน (Rounded Rectangle)
+                canvasCtx.fillStyle = item.color;
+                canvasCtx.beginPath();
+                if (canvasCtx.roundRect) {
+                    canvasCtx.roundRect(item.x - item.width/2, item.y - item.height/2, item.width, item.height, 12);
+                } else {
+                    canvasCtx.rect(item.x - item.width/2, item.y - item.height/2, item.width, item.height);
+                }
+                canvasCtx.fill();
+                
+                // ใส่เส้นขอบให้กล่องดูมีมิติ
+                canvasCtx.lineWidth = 2;
+                canvasCtx.strokeStyle = 'rgba(255,255,255,0.6)';
+                canvasCtx.stroke();
+
+                // เขียนข้อความลงไปในกล่อง
+                canvasCtx.fillStyle = "white";
+                canvasCtx.font = "bold 16px sans-serif";
+                canvasCtx.textAlign = "center";
+                canvasCtx.textBaseline = "middle";
+                canvasCtx.fillText(item.text, item.x, item.y);
+
+                // ตรวจเช็คการชน (Collision) ระหว่างนิ้วชี้กับกล่องไอเทม
+                if (indexFinger.isActive) {
+                    if (indexFinger.x > item.x - item.width/2 && 
+                        indexFinger.x < item.x + item.width/2 &&
+                        indexFinger.y > item.y - item.height/2 && 
+                        indexFinger.y < item.y + item.height/2) {
+                        
+                        // แตะโดนแล้วคำนวณคะแนนตามเงื่อนไข
+                        if (item.isAlgo) {
+                            score += 10;
+                        } else {
+                            score = Math.max(0, score - 5); // ป้องกันไม่ให้คะแนนติดลบ
+                        }
+                        
+                        scoreBoard.innerText = `คะแนน: ${score}`; // อัปเดตคะแนนบนหน้าจอ
+                        gameItems.splice(i, 1);                  // ลบไอเทมที่โดนแตะทิ้งไป
+                        continue;
+                    }
+                }
+
+                // ลบกล่องที่หลุดหน้าจอด้านล่างออกไปเพื่อไม่ให้เปลืองเมมโมรี่
+                if (item.y > canvasElement.height + 60) {
+                    gameItems.splice(i, 1);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
